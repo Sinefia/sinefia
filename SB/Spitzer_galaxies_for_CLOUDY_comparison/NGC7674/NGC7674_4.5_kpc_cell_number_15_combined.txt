@@ -1,0 +1,5 @@
+# list of lines sorted by wavelength
+Ar_2_6.98337m 4.7e-18 1.0e-17
+Ne_2_12.81010m 7.8e-18 3.6e-18
+Ne_3_15.55090m 4.9e-18 3.0e-18
+S_3_18.70780m 5.8e-18 3.7e-18
