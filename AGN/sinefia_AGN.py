@@ -1,384 +1,607 @@
-#######################################################
-#######################         #######################
-####################### SINEFIA #######################
-#######################         #######################
-#######################################################
-
-
-#######################################################
-#######################################################
-
+###########################################################
+#######################             #######################
+####################### SINEFIA AGN #######################
+#######################             #######################
+###########################################################
 
 import numpy as np
 import matplotlib.pyplot as plt
-import os
-import sys
-import subprocess
-import shutil
-import itertools
-import json
-from scipy.stats import chi2
-
+#from scipy.stats import chi2
+from multiprocessing import Pool
+from functools import partial
+import os, sys, shutil, subprocess, json, itertools, traceback, csv, re, glob, math
 
 #######################################################
+# User parameters (edit as needed)
 #######################################################
-#######################################################
 
-Ncpus = 8 # Number of CPUs used for the parallelization in grids
-cloudy_executable = "/Users/roman/Documents/PhD/cloudy/c17.03/source/cloudy.exe" # Location of the cloudy.exe file
-
-
-### Input AGN variables ###
+Ncpus = 8  # Number of CPUs used for the parallelization
+cloudy_executable = "/Users/roman/Documents/PhD/cloudy/c17.03/source/cloudy.exe"  # Path to cloudy executable
 
 # For non-grid parameters set step to 0
-
 aox_init = -1.4 # X-ray to UV-optical ratio
 aox_end = -1.4
-aox_step = 0 #
+aox_step = 0
 
-U_init = -3.5 # Ionization parameter, start of the grid (in log)
-U_end = -2.0 # Ionization parameter, end of the grid
-U_step = 0.5 # Ionization parameter, step of the grid
+U_init = -3.5 # Ionization parameter (log)
+U_end = -3.0
+U_step = 0.5
 
-### Input cloud variables ###
+density_law = 'constant density'
 
-density_law = 'constant density' #diff model, not param
+nH_init = 1.0 # Hydrogen density at the iluminated face of the cloud
+nH_end = 1.0
+nH_step = 0.0
 
-nh_init = 1.0 # Hydrogen density at the iluminated face of the cloud, start of the grid (in log)
-nh_end = 6.0 # Hydrogen density at the iluminated face of the cloud, end of the grid
-nh_step = 1.0 # Hydrogen density, step of the grid
-
-
-Z_init = 1. # Solar metallicity of both metals and grains. Abundance also should vary for low metallicities! And will be as density_law, not a param
-#O/H
-Z_end = 1. 
+Z_init = 1.0 # Solar metallicity of both metals and grain
+Z_end = 1.0
 Z_step = 0
 
 covfac_init = 0.3 # Covering factor
-covfac_end = 0.3
-covfac_step = 0
+covfac_end = 0.6
+covfac_step = 0.3
 
-Nh_init = 23.0 # Column density, the stopping criteria (in log)
-Nh_end = 23.0
-Nh_step = 0
-
-### Observational values to compare with ###
+NH_init = 23.0 # Column density (log), the stopping criteria
+NH_end = 23.0
+NH_step = 0
 
 obs_lines_file = "ObsLineList.txt"
+list_lines_file = "LineList.dat"
+cloudy_input_file = "agnmodel.in"
 
-#Things missing:
-    # wrapper for other params (aox, Z, cov fac, Nh)
-    # cornerplots
+# Switch to run CLOUDY
+cloudy_switch = 0
+# Switch to extract the model results and sotre them
+extractor_switch = 0
+# Find best model from database comparing with observations
+best_switch = 1
 
-### SWITCHES ###
+# If model-folder exists: overwrite or skip?
+overwrite_existing = True
 
-cloudy_switch=0 # runs CLOUDY
-
-extractor_switch=0 # takes from each folder the lines (.lineoutput), the grid of params (grid_U_hden.txt), and merges.
-
-bestmodel_switch=1 # takes the parameters written above and estimate likelihoods, comparing with observations
-
-#cornerplot_switch=0 #takes the likelihoods and makes a corner plot, COMBINE
-
-#######################################################
-#######################################################
-#######################################################
-
+# Output folder for all model folders
 output_folder = 'models'
 
-# Ensure the output folder exists
-if not os.path.exists(output_folder):
-    os.makedirs(output_folder)
-    
-# Create the folder to run cloudy. If it exists it will automatically overwrite the files on it.
-folder_name = f"AGNmodel_aox{aox_init}_U{U_init}to{U_end}inc{U_step}_nH{nh_init}to{nh_end}inc{nh_step}_Z{Z_init}_covfac{covfac_init}_NH{Nh_init}_ctedens" 
-if not os.path.exists(folder_name):
-    os.makedirs(folder_name)
-    
-# Arrays
-if aox_step==0:
-    aox = np.arange(aox_init, aox_init+1, 1)
+#######################################################
+# Build parameter arrays
+#######################################################
+if aox_step == 0:
+    aox = np.arange(aox_init, aox_init + 1, 1)
 else:
-    aox = np.arange(aox_init, aox_end+aox_step, aox_step)
+    aox = np.arange(aox_init, aox_end + aox_step, aox_step)
 
-if U_step==0:
-    U = np.arange(U_init, U_init+1, 1)
+if U_step == 0:
+    U = np.arange(U_init, U_init + 1, 1)
 else:
-    U = np.arange(U_init, U_end+U_step, U_step)
-    
-if nh_step==0:
-    nh = np.arange(nh_init, nh_init+1, 1)
+    U = np.arange(U_init, U_end + U_step, U_step)
+
+if nH_step == 0:
+    nH = np.arange(nH_init, nH_init + 1, 1)
 else:
-    nh = np.arange(nh_init, nh_end+nh_step, nh_step)
-    
-if Z_step==0:
-    Z = np.arange(Z_init, Z_init+1, 1)
+    nH = np.arange(nH_init, nH_end + nH_step, nH_step)
+
+if Z_step == 0:
+    Z = np.arange(Z_init, Z_init + 1, 1)
 else:
-    Z = np.arange(Z_init, Z_end+Z_step, Z_step)
+    Z = np.arange(Z_init, Z_end + Z_step, Z_step)
 
-if covfac_step==0:
-    cov = np.arange(covfac_init, covfac_init+1, 1)
+if covfac_step == 0:
+    cov = np.arange(covfac_init, covfac_init + 1, 1)
 else:
-    cov = np.arange(covfac_init, covfac_end+covfac_step, covfac_step)
+    cov = np.arange(covfac_init, covfac_end + covfac_step, covfac_step)
 
-if Nh_step==0:
-    NH = np.arange(Nh_init, Nh_init+1, 1)
+if NH_step == 0:
+    NH = np.arange(NH_init, NH_init + 1, 1)
 else:
-    NH = np.arange(Nh_init, Nh_end+Nh_step, Nh_step)
-    
-#print(aox,U,nh,Z,cov,NH)
+    NH = np.arange(NH_init, NH_end + NH_step, NH_step)
 
-combinations = list(itertools.product(aox, U, nh, Z, cov, NH))
-#print(combinations)
+# All combinations
+combinations = list(itertools.product(aox, U, nH, Z, cov, NH))
 
-list_lines_file = "LineList.dat"
-
-# Read the linelist file to get the desired lines
+#######################################################
+# Read desired lines list (keeps same behaviour)
+#######################################################
 with open(list_lines_file, 'r') as linelist_file:
     desired_lines = [line.strip().replace(' ', '_') for line in linelist_file if not line.startswith('#')]
-    #print(desired_lines)
-    
-# Relative abundances for C, N and He, as in Nicholls+17 and Decarli+23
-oh = 3.19*10**(-4) # Default O abundance in ISM
-c_abundance = np.log10(10**(-0.8)+10**(np.log10(oh*Z_init)+2.72))+np.log10(oh*Z_init)
-n_abundance = np.log10(10**(-1.732)+10**(np.log10(oh*Z_init)+2.19))+np.log10(oh*Z_init)
-he_abundance = -1.0783+np.log10(1+0.1703*Z_init)
 
 #######################################################
-    
-if cloudy_switch==1: 
+# Prepare output folder
+#######################################################
+def sanitize_val_for_name(val): # Convert negative signs -> 'm', decimal points -> 'p'
+    s = f"{val:.6g}"  # compact representation
+    s = s.replace('-', 'm').replace('.', 'p').replace('+', '')
+    return s
 
-    for item in desired_lines:
-        file_name = os.path.join(output_folder, item+'.json')
-        if os.path.exists(file_name):
-            with open(file_name, 'r') as json_file:
-                existing_data = json.load(json_file)
-                existing_combinations = list(zip(existing_data['aox'], existing_data['U'], existing_data['nh'], existing_data['Z'], existing_data['cov'], existing_data['NH']))
-            
-                existing_matches = [combination for combination in combinations if combination in existing_combinations]
-                if existing_matches:
-                    print('_______________________') 
-                    print("Some parameter combination (aox, log(U), log(nh), Z, cov, Nh) already exist in the database:")
-                    print(existing_matches)
-                    print('_______________________') 
-                    print('You may want to change the parameters to avoid running that models again and save time.') 
-                    while True:
-                        user_input = input("Do you still want to run your input models? [y/n]: ").strip().lower()
-                        if user_input == "y":
-                            break
-                        elif user_input == "n":
-                            sys.exit(1)
-                        else:
-                            print("Invalid input. Please enter 'y' or 'n'")       
-        else:
-            pass
-            
-    print('_______________________') 
-    print('As a reference, the grid of models will take approximately ',len(combinations)*4,' minutes to run with 8 CPUs')
-    print('_______________________') 
+def make_run_folder_name(aox, U, nH, Z, cov, NH):
+    return f"model_aox{sanitize_val_for_name(aox)}_U{sanitize_val_for_name(U)}_nH{sanitize_val_for_name(nH)}_Z{sanitize_val_for_name(Z)}_cov{sanitize_val_for_name(cov)}_NH{sanitize_val_for_name(NH)}"
 
-    cloudy_input_file = "agnmodel.in"
-
-    # Copy CLOUDY input files to new folder and change to it
-    shutil.copy(cloudy_input_file, folder_name)
-    shutil.copy(list_lines_file, folder_name)
-    os.chdir(folder_name)
-    
-    # Read the CLOUDY input file
-    with open(cloudy_input_file, "r") as file:
-        init_lines = file.readlines()
-        
-    modified_lines = [line.replace("{aox_init}", str(aox_init)).replace("{U_init}", str(U_init)).replace("{U_end}", str(U_end)).replace("{U_step}", str(U_step)).replace("{nh_init}", str(nh_init)).replace("{nh_end}", str(nh_end)).replace("{nh_step}", str(nh_step)).replace("{Z_init}", str(Z_init)).replace("{covfac_init}", str(covfac_init)).replace("{Nh_init}", str(Nh_init)).replace("{c_abundance}", str(c_abundance)).replace("{n_abundance}", str(n_abundance)).replace("{he_abundance}", str(he_abundance)) for line in init_lines] #Simple version without grid 
-
-    # Modify and write the lines in the CLOUDY input file with the dictionary variables
-    with open(cloudy_input_file, "w") as file:
-        file.writelines(modified_lines)
-
-
-    # Run CLOUDY in the folder
-    command = [cloudy_executable, cloudy_input_file]
-    subprocess.run(command)
-
-    os.chdir("..")
-
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder)
 
 #######################################################
+# Worker function for a single combination
+#######################################################
+# combo: tuple (aox, U, nH, Z, cov, NH)
+# This function creates a run folder, copies the input file(s), modifies placeholders, writes params.json and executes CLOUDY with subprocess.run(..., cwd=run_folder)
+def run_single_combination(combo, cloudy_exe, cloudy_input_template, list_lines_file_local, output_root, overwrite=overwrite_existing):
+    aox_c, U_c, nH_c, Z_c, cov_c, NH_c = combo
+    run_folder = os.path.join(output_root, make_run_folder_name(aox_c, U_c, nH_c, Z_c, cov_c, NH_c))
+
+    # Skip if folder exists and overwrite is False
+    if os.path.exists(run_folder) and not overwrite:
+        return {"combo": combo, "status": "skipped", "folder": run_folder}
+
+
+    # Create run folder (if exists and overwrite=True, we clear it)
+    if os.path.exists(run_folder) and overwrite:
+        shutil.rmtree(run_folder)
+    os.makedirs(run_folder, exist_ok=True)
+
+    # Copy input files into run folder
+    shutil.copy(cloudy_input_template, run_folder)
+    shutil.copy(list_lines_file_local, run_folder)
+
+    # Compute abundances for this Z (C, N, and He)
+    def compute_abundances(Z_current):
+        oh = 3.19e-4
+        c_abundance = np.log10(10**(-0.8) + 10**(np.log10(oh * Z_current) + 2.72)) + np.log10(oh * Z_current)
+        n_abundance = np.log10(10**(-1.732) + 10**(np.log10(oh * Z_current) + 2.19)) + np.log10(oh * Z_current)
+        he_abundance = -1.0783 + np.log10(1 + 0.1703 * Z_current)
+        return c_abundance, n_abundance, he_abundance
+    c_abundance, n_abundance, he_abundance = compute_abundances(Z_c)
+
+    # Replace variables in input file agnmodel.in
+    template_path = os.path.join(run_folder, os.path.basename(cloudy_input_template))
+    with open(template_path, 'r') as f:
+        init_lines = f.readlines()
+
+    modified_lines = [
+        line.replace("{aox_init}", str(aox_c))
+            .replace("{U_init}", str(U_c))
+            .replace("{nH_init}", str(nH_c))
+            .replace("{Z_init}", str(Z_c))
+            .replace("{covfac_init}", str(cov_c))
+            .replace("{NH_init}", str(NH_c))
+            .replace("{c_abundance}", str(c_abundance))
+            .replace("{n_abundance}", str(n_abundance))
+            .replace("{he_abundance}", str(he_abundance))
+            .replace("{density_law}", str(density_law))
+        for line in init_lines
+    ]
+
+    with open(template_path, 'w') as f:
+        f.writelines(modified_lines)
+
+    # Save params for each run
+    params = {
+        "aox": float(aox_c),
+        "U": float(U_c),
+        "nH": float(nH_c),
+        "Z": float(Z_c),
+        "cov": float(cov_c),
+        "NH": float(NH_c),
+        "c_abundance": float(c_abundance),
+        "n_abundance": float(n_abundance),
+        "he_abundance": float(he_abundance),
+        "cloudy_input": os.path.basename(cloudy_input_template)
+    }
+    #with open(os.path.join(run_folder, "params.json"), "w") as jf:
+    #    json.dump(params, jf, indent=2)
+    txt_path = os.path.join(run_folder, "params.txt")
+    with open(txt_path, "w") as f:
+        f.write("# model parameters\n")
+        for k, v in params.items():
+            f.write(f"{k} = {v}\n")
+
+    # Run CLOUDY inside the run folder
+    subprocess.run([cloudy_exe, os.path.basename(cloudy_input_template)], cwd=run_folder)
+    
+
+#######################################################
+# Extracting and storing models
 #######################################################
 
-if extractor_switch==1:
-    
-    lineoutput_path = os.path.join(folder_name,  'agnmodellineoutput.txt')        
-    try:
-        lineoutput = open(lineoutput_path, 'r')
-        #lineoutput.close()
-    except FileNotFoundError:
-        print('_______________________')
-        print(f"File not found: {lineoutput_path}. Run the CLOUDY models for that parameter combination.")
-        sys.exit(1)
-        
-    lines = []
-    def it3_finder(file):
-        for line in file:
-            if 'iteration' in line:
-                lines.append(line.split()[2:])
-    
-    it3_finder(lineoutput)
+def sanitize_line_name(name): # To store emission line names
+    s = name.strip()
+    s = re.sub(r'[^\w\s\-\.]', '', s)       # remove some characters
+    s = re.sub(r'\s+', '_', s)              # replace space with underscore
+    return s
 
-    # Loop for each dessired line      
-    for i, item in zip(range(len(desired_lines)), desired_lines):
-        file_name = os.path.join(output_folder, item+'.json')
-
-        # Initialize lists to store parameter values and intensity values for each line
-        param_names = ['aox', 'U', 'nh', 'Z', 'cov', 'NH', 'intensity']
-        param_values = {param: [] for param in param_names}
-        
-        # Assign values to keys
-        for j, (a, b, c, d, e, f) in enumerate(combinations):
-            param_values['aox'].append(a)
-            param_values['U'].append(b)
-            param_values['nh'].append(c)
-            param_values['Z'].append(d)
-            param_values['cov'].append(e)
-            param_values['NH'].append(f)
-                
-        for vals in lines:
-            param_values['intensity'].append(float(vals[i]))
-        
-        print('_______________________')
-        print(f'Computed models for {item} are:')
-        print(param_values)
-    
-        # Check if the file already exists, and if so load the existing dictionary
-        if os.path.exists(file_name):
-            with open(file_name, 'r') as json_file:
-                existing_data = json.load(json_file)
-        else:
-            existing_data = {'aox':[],'U':[],'nh':[],'Z':[],'cov':[],'NH':[],'intensity':[]}
-
-        print('_______________________')
-        
-        # Define the function to merge with existing data
-        def merge(existing_data, param_values):
-            # Check if the combination already exists in existing data
-            existing_combinations = list(zip(
-                existing_data['aox'],
-                existing_data['U'],
-                existing_data['nh'],
-                existing_data['Z'],
-                existing_data['cov'],
-                existing_data['NH']
-            ))
-            
-            existing_matches = [combination for combination in combinations if combination in existing_combinations]
-            #print(existing_matches)
-            nonexisting_matches = [combination for combination in combinations if combination not in existing_combinations]
-            #print(nonexisting_matches)
-            
-            if nonexisting_matches:      
-                for combination in nonexisting_matches:
-                    print(f"New (aox, log(U), log(nh), Z, cov, Nh) combination {combination} added to existing data")
-                for key in param_values:
-                    existing_data[key].extend(param_values[key])                
-            if existing_matches:
-                for combination in existing_matches:
-                    print(f"(aox, log(U), log(nh), Z, cov, Nh) combination {combination} already exists")
-                
-            #for combination in combinations:
-            #    if combination not in existing_combinations:
-                    
-        # Update existing data with new
-        merge(existing_data, param_values)    
-
-        with open(file_name, 'w') as json_file:
-            json.dump(existing_data, json_file, indent=4)
-
-        print('_______________________')
-        print(f'Data saved to {file_name}')
-        print('_______________________')
-    
-   # os.system('rm -rf '+folder_name)
-   
-   
-#######################################################
-#######################################################
-
-if bestmodel_switch==1: 
-
-    ### Read observations file   
-    obs_linenames = []
-    obs_linevalues = []
-    obs_lineerrors = []
-    
-    with open(obs_lines_file, 'r') as obslines_file:
-        for line in obslines_file:
-            if line.startswith('#'):
+def params_txt(path): # Read params.txt in models folders
+    params = {}
+    with open(path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
                 continue
-            parts = line.split()
-            obs_linenames.append(parts[0])
-            obs_linevalues.append(float(parts[1]))
-            obs_lineerrors.append(float(parts[2]))
-    #print(obs_linenames,' ',obs_linevalues,' ',obs_lineerrors)
+            if '=' in line:
+                k, v = [x.strip() for x in line.split('=', 1)]
+                try:
+                    params[k] = float(v)
+                except Exception:
+                    params[k] = v
+    return params
+ 
+def agnmodellineoutput_txt(path): # Read model lines fluxes from agnmodellineoutput.txt
+    with open(path, 'r') as f:
+        lines = [ln.rstrip('\n') for ln in f if ln.strip()]
 
-    # Load existing dictionaries of desired lines
-    for item in obs_linenames:
-        file_name = os.path.join(output_folder, item+'.json')
-        if os.path.exists(file_name):
-            with open(file_name, 'r') as json_file:
-                globals()[item] = json.load(json_file) # Name the file like the line
-        else:  
-            print(f'The line {item} does not exist in the database')
-            
-     # Create a new dictionary to store the lines
-    model_data = {}
+    # model lines header
+    header_line = next((ln for ln in lines if ln.lstrip().startswith('#')), None)
+    modellines = header_line.lstrip('#').split('\t')
+    #if '\t' in header_line:
+    #    modellines = header_line.lstrip('#').split('\t')
+    #else:
+    #    modellines = re.split(r'\s{2,}', header_line.lstrip('#'))
+
+    header = [t.strip().replace(' ', '_') for t in modellines[1:] if t.strip()]
+    # pick last iteration and then the flux values
+    iter_lines = [ln for ln in lines if ln.lower().lstrip().startswith('iteration')]
+    last_iter = iter_lines[-1].strip()
+
+    parts = re.split(r'\t|\s+', last_iter)
+    flux_values = parts[2:] 
+
+    values = []
+    for v in flux_values:
+        try:
+            values.append(float(v))
+        except Exception:
+            values.append(v)
+    return header, values
+
+def update_lines_database(output_root='models'):
+    lines_db_dir = os.path.join(output_root, 'lines_db') # Lines database
+    os.makedirs(lines_db_dir, exist_ok=True)
+
+    # gather models
+    model_entries = []
+    for entry in sorted(os.listdir(output_root)):
+        folder = os.path.join(output_root, entry)
+        if not os.path.isdir(folder):
+            continue
+        params_path = os.path.join(folder, 'params.txt')
+        lineoutput_path = os.path.join(folder, 'agnmodellineoutput.txt')
+        if not (os.path.exists(params_path) and os.path.exists(lineoutput_path)):
+            continue
+
+        params = params_txt(params_path)
+        header, values = agnmodellineoutput_txt(lineoutput_path)
+        if not header or not values:
+            continue
+
+        n = min(len(header), len(values))
+        line_map = { header[i]: values[i] for i in range(n) }
+
+        # Parameters
+        def get_param(pdict, keys, default=math.nan):
+            for kk in keys:
+                if kk in pdict:
+                    return pdict[kk]
+            return default
+
+        aox_v = get_param(params, ['aox'])
+        U_v   = get_param(params, ['U'])
+        nH_v  = get_param(params, ['nH'])
+        Z_v   = get_param(params, ['Z'])
+        cov_v = get_param(params, ['cov'])
+        NH_v  = get_param(params, ['NH'])  
         
-    for item in obs_linenames:
-        current_data = globals()[item]
-        model_data[item] = {}
-            
-        for key in ["aox", "U", "nh", "Z", "cov", "NH"]:
-            model_data[item][key] = current_data[key]
-            model_data[item]["intensity"] = current_data["intensity"]
-    
-    # And now store only the intensities
-    n_lines = len(obs_linenames)
-    model_fluxes = np.zeros((len(combinations), n_lines))
-    for line_idx, (line_name, line_data) in enumerate(model_data.items()):  # Iterate over lines
-        for comb_idx in range(len(combinations)):  # Iterate over parameter combinations
-            model_fluxes[comb_idx, line_idx] = line_data['intensity'][comb_idx]
-            
-    
-    # Scaling and chi2 calculation
-    numerator = np.nansum(obs_linevalues*model_fluxes/(np.array((obs_lineerrors))**2), axis=1)
-    denominator = np.nansum(model_fluxes**2/np.array((obs_lineerrors))**2 , axis=1)
-    scal = numerator/denominator #1 scaling per model
-    
-    residuals = obs_linevalues - scal[:, np.newaxis]*model_fluxes 
-    #print('residuals',residuals)
-    chi_sq = np.nansum((residuals**2) / np.array((obs_lineerrors))**2, axis=1)
-    
-    # Find the index of the smallest chi-squared value
-    min_chi2_idx = np.argmin(chi_sq)
-    min_chi2_value = chi_sq[min_chi2_idx]
+        keytuple = (float(aox_v), float(U_v), float(nH_v), float(Z_v), float(cov_v), float(NH_v))
+        
+        model_entries.append({'folder': folder, 'params': params, 'keytuple': keytuple, 'line_map': line_map})
 
-    # Print corresponding aox and U for the model with the smallest chi-squared
-    b_aox = model_data[list(model_data.keys())[0]]["aox"][min_chi2_idx]
-    b_U = model_data[list(model_data.keys())[0]]["U"][min_chi2_idx]
-    b_nh = model_data[list(model_data.keys())[0]]["nh"][min_chi2_idx]
-    b_Z = model_data[list(model_data.keys())[0]]["Z"][min_chi2_idx]
-    b_cov = model_data[list(model_data.keys())[0]]["cov"][min_chi2_idx]
-    b_NH = model_data[list(model_data.keys())[0]]["NH"][min_chi2_idx]
+    # collect line names
+    all_lines = set()
+    for me in model_entries:
+        all_lines.update(me['line_map'].keys())
 
-    print(f"Smallest chi-squared value: {min_chi2_value}")
-    print(f"Corresponding best parameters (aox, U, nh, Z, cov, NH): ({b_aox}, {b_U}, {b_nh}, {b_Z}, {b_cov}, {b_NH})")
+    # update CSV per line
+    for line_name in sorted(all_lines):
+        safe_name = sanitize_line_name(line_name)
+        csv_path = os.path.join(lines_db_dir, f"{safe_name}.csv")
 
-    print('_______________________')
+        # load existing keys
+        existing_keys = set()
+        if os.path.exists(csv_path):
+            with open(csv_path, 'r', newline='') as cf:
+                reader = csv.DictReader(cf)
+                for row in reader:
+                    try:
+                        k = (
+                            float(row['aox']),
+                            float(row['U']),
+                            float(row['nH']),
+                            float(row['Z']),
+                            float(row['cov']),
+                            float(row['NH']),
+                        )
+                        existing_keys.add(k)
+                    except Exception:
+                        pass
+
+        write_header = not os.path.exists(csv_path)
+        appended = 0
+        with open(csv_path, 'a', newline='') as cf:
+            fieldnames = ['aox', 'U', 'nH', 'Z', 'cov', 'NH', 'intensity']
+            writer = csv.DictWriter(cf, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+
+            for me in model_entries:
+                if line_name not in me['line_map']:
+                    continue
+                key = me['keytuple']
+                if key is None:
+                    continue
+                if key in existing_keys:
+                    continue
+                aox_v, U_v, nH_v, Z_v, cov_v, NH_v = key
+                intensity = me['line_map'][line_name]
+                try:
+                    intensity = float(intensity)
+                except Exception:
+                    intensity = math.nan
+                writer.writerow({
+                    'aox': f"{aox_v:.6g}",
+                    'U': f"{U_v:.6g}",
+                    'nH': f"{nH_v:.6g}",
+                    'Z': f"{Z_v:.6g}",
+                    'cov': f"{cov_v:.6g}",
+                    'NH': f"{NH_v:.6g}",
+                    'intensity': f"{intensity:.6g}"
+                })
+                appended += 1
+        if appended:
+            print(f"Appended {appended} rows to {csv_path}")
+
+if extractor_switch == 1:
+    update_lines_database(output_folder)
     
 #######################################################
+# Best model comparing with observations
 #######################################################
 
-    
-    
+def round_key_tuple(ktuple, ndigits=8): # Round to same number of digits
+    try:
+        return tuple([round(float(x), ndigits) for x in ktuple])
+    except Exception:
+        return None
+
+def find_best_model(obs_file,
+                    lines_db_dir='models/lines_db',
+                    models_root='models',
+                    param_order=('aox','U','nH','Z','cov','NH'),
+                    rounding=8,
+                    topn=5):
+    # read obs
+    obs_names = []; obs_fluxes = []; obs_errors = []
+    with open(obs_file, 'r') as fh:
+        for ln in fh:
+            ln = ln.strip()
+            if not ln or ln.startswith('#'):
+                continue
+            parts = ln.split()
+            if len(parts) < 3:
+                raise ValueError(f"Bad line in obs file: {ln!r} (expected: line flux error)")
+            obs_names.append(parts[0])
+            obs_fluxes.append(float(parts[1]))
+            obs_errors.append(float(parts[2]))
+    if len(obs_names) == 0:
+        print("No observed lines found in", obs_file)
+        return None
+
+    # observed lines in the database
+    available = []
+    missing = []
+    line_csv_paths = {}
+    for name in obs_names:
+        fname = sanitize_line_name(name) + '.csv'
+        p = os.path.join(lines_db_dir, fname)
+        if os.path.exists(p):
+            available.append(name)
+            line_csv_paths[name] = p
+        else:
+            missing.append(name)
+
+    if missing:
+        print("Warning: the following observed lines are NOT in the database and will be ignored for this fit:")
+        for m in missing:
+            print("  -", m)
+        print("Caution: line names need one _ for two letter names (e.g.: Ar), and two __ for single letter names (e.g.: S)")
+
+    if not available:
+        print("No observed lines are present in the database. Aborting.")
+        return None
+
+    # load available model lines
+    line_maps = {}
+    for name, path in line_csv_paths.items():
+        mp = {}
+        with open(path, 'r', newline='') as cf:
+            reader = csv.DictReader(cf)
+            for row in reader:
+                try:
+                    key = (
+                        float(row['aox']),
+                        float(row['U']),
+                        float(row['nH']),
+                        float(row['Z']),
+                        float(row['cov']),
+                        float(row['NH'])
+                    )
+                except Exception:
+                    continue
+                rkey = round_key_tuple(key, ndigits=rounding)
+                try:
+                    intensity = float(row.get('intensity', math.nan))
+                except Exception:
+                    intensity = math.nan
+                mp[rkey] = intensity
+        line_maps[name] = mp
+        
+
+    # models that have ALL available lines
+    key_sets = [set(mp.keys()) for mp in line_maps.values()]
+    common_keys = set.intersection(*key_sets) if key_sets else set()
+
+    if not common_keys:
+        print("No single model (parameter combination) contains all the available observed lines simultaneously.")
+        return None
     
 
+    # model_fluxes (n_models x n_used_lines)
+    sorted_keys = sorted(common_keys)
+    n_models = len(sorted_keys)
+    n_lines = len(available)
+    model_fluxes = np.zeros((n_models, n_lines), dtype=float)
+    for j, name in enumerate(available):
+        mp = line_maps[name]
+        for i, k in enumerate(sorted_keys):
+            model_fluxes[i, j] = mp.get(k, math.nan)
+
+    obs_fluxes_arr = np.array([v for name,v in zip(obs_names, obs_fluxes) if name in available], dtype=float)
+    obs_errors_arr = np.array([v for name,v in zip(obs_names, obs_errors) if name in available], dtype=float)
+      
+    # compute best-fit single scaling per model and chi2
+    #    scal = sum(obs * model / err^2) / sum(model^2 / err^2)
+    if np.any(obs_errors_arr == 0):
+        raise ValueError("Some observation errors are zero — cannot weight by 1/sigma^2.")
+    w = 1.0 / (obs_errors_arr**2)
+    numerator = np.nansum((obs_fluxes_arr * model_fluxes) * w, axis=1)
+    denominator = np.nansum((model_fluxes**2) * w, axis=1)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        scal = numerator / denominator
+    residuals = obs_fluxes_arr[np.newaxis, :] - (scal[:, np.newaxis] * model_fluxes)
+    chi2 = np.nansum((residuals**2) * w, axis=1)
+
+    # choose best
+    best_idx = int(np.nanargmin(chi2))
+    best_key = sorted_keys[best_idx]
+    best_chi2 = float(chi2[best_idx])
     
+    try:
+        folder_name = make_run_folder_name(*best_key)
+        folder_path = os.path.join(models_root, folder_name)
+        if not os.path.exists(folder_path):
+            folder_path = None
+    except Exception:
+        folder_path = None
+
+    # report
+    print("Best-fit model using available lines:")
+    print(f"  used lines (N={len(available)}): {', '.join(available)}")
+    print(f"  best chi2 = {best_chi2:.6g}")
+    print("  best parameters (aox, U, nh, Z, cov, NH):")
+    print("   ", best_key)
+    if folder_path:
+        print("  best model folder:", folder_path)
+    else:
+        print("  best model folder not found")
+
+    # top-N list of best models
+    order = np.argsort(chi2)
+    print(f"\nTop {min(topn, n_models)} models by chi2:")
+    for r in range(min(topn, n_models)):
+        idx = int(order[r])
+        print(f" {r+1:2d}) chi2={chi2[idx]:.6g}  params={sorted_keys[idx]}")
+
+    return {
+        'available_lines': available,
+        'missing_lines': missing,
+        'best_key': best_key,
+        'best_chi2': best_chi2,
+        'best_folder': folder_path,
+        'sorted_keys': sorted_keys,
+        'chi2_array': chi2,
+        'scale_array': scal,
+        'model_fluxes': model_fluxes,
+        'obs_fluxes_used': obs_fluxes_arr,
+        'obs_errors_used': obs_errors_arr
+    }
+
+
+#######################################################
+# CLOUDY parallel running
+#######################################################
+if __name__ == "__main__":
+    if best_switch:
+    # obs_lines_file is the variable you used earlier (e.g. "ObsLineList.txt")
+        obs_file = obs_lines_file  # or put a path string: "my_obs.txt"
+        result = find_best_model(
+            obs_file,
+            lines_db_dir=os.path.join(output_folder, 'lines_db'),
+            models_root=output_folder
+            )
+
+        if result is None:
+            print("No best model found.")
+        else:
+            print("Best model params:", result['best_key'])
+            print("Best model folder:", result.get('best_folder'))
+            print("Best chi2:", result['best_chi2'])
+            
+    if cloudy_switch != 1:
+        print("cloudy_switch != 1 -> not running CLOUDY. Exiting.")
+        sys.exit(0)
+
+    # Check for existing combinations in output folder
+    existing_folders = set(os.listdir(output_folder))
+    duplicates = []
+    for combo in combinations:
+        name = make_run_folder_name(*combo)
+        if name in existing_folders:
+            duplicates.append(name)
+    if duplicates:
+        print("The following models already exist:")
+        for d in duplicates[:100]:
+            print("  ", d)
+        if not overwrite_existing:
+            print("They will be skipped unless you set overwrite_existing = True at top of script.")
+
+    # Copy template input and linelist into output root
+    try:
+        shutil.copy(cloudy_input_file, output_folder)
+    except Exception:
+        pass
+    try:
+        shutil.copy(list_lines_file, output_folder)
+    except Exception:
+        pass
+
+    # Run parallel jobs and show progress
+    try:
+        from tqdm import tqdm
+        HAS_TQDM = True
+    except Exception:
+        HAS_TQDM = False
+
+    worker = partial(run_single_combination,
+                     cloudy_exe=cloudy_executable,
+                     cloudy_input_template=cloudy_input_file,
+                     list_lines_file_local=list_lines_file,
+                     output_root=output_folder,
+                     overwrite=overwrite_existing)
+
+    n_jobs = min(max(1, Ncpus), len(combinations))
     
+    # If there are fewer models than Ncpus, reduce processes
+    print(f"Starting parallel run with {n_jobs} processes...")
+
+    with Pool(processes=n_jobs) as pool:
+        iterator = pool.imap_unordered(worker, combinations)
+
+        # If tqdm available use it
+        if HAS_TQDM:
+            for _ in tqdm(iterator, total=len(combinations), desc="Running models", unit="model"):
+                pass
+        else:
+            for _ in iterator:
+                pass
+
+    print("Parallel run finished.")
+    
+
+
+
+
