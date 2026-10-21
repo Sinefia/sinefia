@@ -1,5 +1,5 @@
 # SINEFIA
-A wrapper to run and store CLOUDY models, and compare with observations through a Bayesian approach.
+A wrapper to run and store CLOUDY models, and compare with observations through a Bayesian approach. *To be updated soon*
 
 ## Introduction
 CLOUDY is a commonly used radiative transfer code (https://gitlab.nublado.org/cloudy/cloudy; [release paper](https://ui.adsabs.harvard.edu/abs/2025arXiv250801102G/abstract)) that simulates the physical conditions and emission spectra of a cloud of gas and dust under various astrophysical environments. The tools we present here are designed to facilitate running CLOUDY models for starburst and AGN environments, and comparing the results with observations. We also aim to procedurally build a database of line emission from the most common emission lines as a function of different CLOUDY parameters. Users can immediately utilize results from the available lines without needing to run the often time-consuming and computationally expensive CLOUDY models. 
