@@ -1074,7 +1074,7 @@ def fit_galaxy(obs_file, allowed, grid):
     sub_has = np.broadcast_to(used_mask, has.shape) & complete[:, None]
     sub_scale, sub_chi2 = chi2_of(obs, sigma, np.where(sub_has, model, np.nan), sub_has)
     sub_chi2[~complete] = np.inf
-    like = np.exp(-0.5 * (sub_chi2 - sub_chi2[best]))
+    like = np.exp(-0.5 * (sub_chi2 - sub_chi2[complete].min()))
     like[~np.isfinite(like)] = 0.0
     like /= like.sum()
 
